@@ -15,6 +15,7 @@
 #include "uart.h"
 #include "usb.h"
 #include "bitmaps.h"
+#include "coproc.h"
 
 static void init() {
     led_init();
@@ -29,6 +30,7 @@ static void init() {
     frame_init();
     usb_init();
     uart_protocol_init();
+    coproc_init();
 
     led_red(false);
 }

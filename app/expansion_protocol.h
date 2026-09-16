@@ -48,6 +48,14 @@ typedef enum {
     ExpansionFrameTypeBaudRate = 3, /**< Baud rate negotiation frame. */
     ExpansionFrameTypeControl = 4, /**< Control frame. */
     ExpansionFrameTypeData = 5, /**< Data frame. */
+    /** @brief Coprocessor job frame.
+     *
+     * Carries chunked compute-offload job requests and results. Independent of,
+     * and may be freely interleaved with, an active RPC session (@see
+     * ExpansionFrameControlCommandStartRpc) — the two are sibling channels over
+     * the same link, not exclusive modes. Valid any time after the handshake.
+     */
+    ExpansionFrameTypeCoproc = 6,
     ExpansionFrameTypeReserved, /**< Special value. */
 } ExpansionFrameType;
 
@@ -64,9 +72,51 @@ typedef enum {
  * @brief Enumeration of suported control commands.
  */
 typedef enum {
-    ExpansionFrameControlCommandStartRpc = 0x00, /**< Start an RPC session. */
-    ExpansionFrameControlCommandStopRpc = 0x01, /**< Stop an open RPC session. */
+    /** @brief Start an RPC session.
+     *
+     * Must only be used while the RPC session is NOT active.
+     */
+    ExpansionFrameControlCommandStartRpc = 0x00,
+    /** @brief Stop an open RPC session.
+      *
+      * Must only be used while the RPC session IS active.
+      */
+    ExpansionFrameControlCommandStopRpc = 0x01,
+    /** @brief Enable OTG (5V) on external GPIO.
+      *
+      * Must only be used while the RPC session is NOT active,
+      * otherwise OTG is to be controlled via RPC messages.
+      */
+    ExpansionFrameControlCommandEnableOtg = 0x02,
+    /** @brief Disable OTG (5V) on external GPIO.
+      *
+      * Must only be used while the RPC session is NOT active,
+      * otherwise OTG is to be controlled via RPC messages.
+      */
+    ExpansionFrameControlCommandDisableOtg = 0x03,
 } ExpansionFrameControlCommand;
+
+/**
+ * @brief Coprocessor job frame flag bits.
+ */
+typedef enum {
+    /** @brief Set on a job request chunk (Flipper -> module), clear on a result chunk (module -> Flipper). */
+    ExpansionFrameCoprocFlagRequest = (1 << 0),
+    /** @brief Set on the first chunk of a job message. */
+    ExpansionFrameCoprocFlagFirst = (1 << 1),
+    /** @brief Set on the last chunk of a job message. */
+    ExpansionFrameCoprocFlagLast = (1 << 2),
+    /** @brief Set on a result chunk to indicate the job failed; payload (if any) is undefined. */
+    ExpansionFrameCoprocFlagError = (1 << 3),
+} ExpansionFrameCoprocFlag;
+
+/**
+ * @brief Maximum coprocessor job payload size per frame, in bytes.
+ *
+ * Smaller than EXPANSION_PROTOCOL_MAX_DATA_SIZE to make room for the
+ * chunk header fields within the same frame content size ceiling.
+ */
+#define EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE (56U)
 
 #pragma pack(push, 1)
 
@@ -116,6 +166,26 @@ typedef struct {
 } ExpansionFrameData;
 
 /**
+ * @brief Coprocessor job frame contents.
+ *
+ * Job requests and results are chunked across one or more of these frames,
+ * reassembled by (job_id, request-vs-result) on the receiving side using the
+ * First/Last flags. A job_id is only reused after its result has been fully
+ * delivered.
+ */
+typedef struct {
+    uint16_t job_id; /**< Sender-assigned identifier, unique among that sender's in-flight jobs. */
+    uint8_t task_type; /**< Task type identifier. Meaning is defined above the protocol layer. */
+    uint8_t flags; /**< @see ExpansionFrameCoprocFlag. */
+    uint16_t chunk_seq; /**< Zero-based index of this chunk within the message. */
+    uint16_t chunk_total; /**< Total number of chunks in this message. */
+    /** Size of this chunk's payload. Must be less than EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE. */
+    uint8_t payload_len;
+    /** Payload bytes. Valid only up to ExpansionFrameCoproc::payload_len bytes. */
+    uint8_t payload[EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE];
+} ExpansionFrameCoproc;
+
+/**
  * @brief Expansion protocol frame structure.
  */
 typedef struct {
@@ -126,6 +196,7 @@ typedef struct {
         ExpansionFrameBaudRate baud_rate; /**< Baud rate frame contents. */
         ExpansionFrameControl control; /**< Control frame contents. */
         ExpansionFrameData data; /**< Data frame contents. */
+        ExpansionFrameCoproc coproc; /**< Coprocessor job frame contents. */
     } content; /**< Contents of the frame. */
 } ExpansionFrame;
 
@@ -180,6 +251,9 @@ static inline size_t expansion_frame_get_encoded_size(const ExpansionFrame* fram
         return sizeof(frame->header) + sizeof(frame->content.control);
     case ExpansionFrameTypeData:
         return sizeof(frame->header) + sizeof(frame->content.data.size) + frame->content.data.size;
+    case ExpansionFrameTypeCoproc:
+        return sizeof(frame->header) + offsetof(ExpansionFrameCoproc, payload) +
+               frame->content.coproc.payload_len;
     default:
         return 0;
     }
@@ -193,11 +267,18 @@ static inline size_t expansion_frame_get_encoded_size(const ExpansionFrame* fram
  *
  * @param[in] frame pointer to the frame to be evaluated.
  * @param[in] received_size number of bytes currently availabe for evaluation.
- * @returns number of bytes needed for a complete frame.
+ * @param[out] remaining_size pointer to the variable to contain the number of bytes needed for a complete frame.
+ * @returns true if the remaining size could be calculated, false on error.
  */
-static inline size_t
-    expansion_frame_get_remaining_size(const ExpansionFrame* frame, size_t received_size) {
-    if(received_size < sizeof(ExpansionFrameHeader)) return sizeof(ExpansionFrameHeader);
+static inline bool expansion_frame_get_remaining_size(
+    const ExpansionFrame* frame,
+    size_t received_size,
+    size_t* remaining_size) {
+    if(received_size < sizeof(ExpansionFrameHeader)) {
+        // Frame type is unknown as of now
+        *remaining_size = sizeof(ExpansionFrameHeader);
+        return true;
+    }
 
     const size_t received_content_size = received_size - sizeof(ExpansionFrameHeader);
     size_t content_size;
@@ -217,16 +298,37 @@ static inline size_t
         break;
     case ExpansionFrameTypeData:
         if(received_content_size < sizeof(frame->content.data.size)) {
+            // Data size is unknown as of now
             content_size = sizeof(frame->content.data.size);
+        } else if(frame->content.data.size > sizeof(frame->content.data.bytes)) {
+            // Malformed frame or garbage input
+            return false;
         } else {
             content_size = sizeof(frame->content.data.size) + frame->content.data.size;
         }
         break;
+    case ExpansionFrameTypeCoproc:
+        if(received_content_size < offsetof(ExpansionFrameCoproc, payload)) {
+            // Chunk header is not fully known yet
+            content_size = offsetof(ExpansionFrameCoproc, payload);
+        } else if(frame->content.coproc.payload_len > sizeof(frame->content.coproc.payload)) {
+            // Malformed frame or garbage input
+            return false;
+        } else {
+            content_size = offsetof(ExpansionFrameCoproc, payload) + frame->content.coproc.payload_len;
+        }
+        break;
     default:
-        return SIZE_MAX;
+        return false;
     }
 
-    return content_size > received_content_size ? content_size - received_content_size : 0;
+    if(content_size > received_content_size) {
+        *remaining_size = content_size - received_content_size;
+    } else {
+        *remaining_size = 0;
+    }
+
+    return true;
 }
 
 /**
@@ -275,9 +377,7 @@ static inline ExpansionProtocolStatus expansion_protocol_decode(
     size_t remaining_size;
 
     while(true) {
-        remaining_size = expansion_frame_get_remaining_size(frame, total_size);
-
-        if(remaining_size == SIZE_MAX) {
+        if(!expansion_frame_get_remaining_size(frame, total_size, &remaining_size)) {
             return ExpansionProtocolStatusErrorFormat;
         } else if(remaining_size == 0) {
             break;
