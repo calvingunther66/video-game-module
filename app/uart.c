@@ -16,13 +16,36 @@
 #include "led_state.h"
 #include "bitmaps.h"
 #include "expansion_protocol.h"
+#include "coproc.h"
 
 #define UART_ID uart0
 #define UART_IRQ UART0_IRQ
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
 #define UART_INIT_BAUD_RATE (9600UL)
-#define UART_BAUD_RATE (1843200UL)
+// Was 1843200 (raised from 921600 upstream in commit c44ad25, Feb 2024). On
+// this specific Flipper+VGM pair, 1843200 reliably produces UART RX
+// overrun/framing errors on the Flipper's STM32 side within ~11ms of RPC
+// session start - confirmed via a byte-for-byte pristine-upstream build,
+// across two different host GCC versions, so it is not specific to any
+// application code. The "Official" firmware bundled in the community
+// flasher app predates that commit and still uses 921600, which is why it
+// alone appeared to work throughout this investigation. Reverted to the
+// last confirmed-stable rate; this halves the link's raw throughput, which
+// only matters for screen mirroring (the coproc channel's 66-byte frames
+// are unaffected). May be liftable again on hardware/cabling with tighter
+// timing margin than this unit - not re-attempted here.
+//
+// Raised again to 2000000 together with the FlipDev Momentum firmware's
+// expansion-worker change that moves the Flipper's USART1 RX from one
+// interrupt per byte to circular DMA with a deeper staging buffer (the
+// suspected cause of the overruns above). 2 Mbaud rather than 1843200 because
+// it divides exactly on both ends: STM32 64 MHz / 16 / 32 and RP2040
+// clk_peri 252 MHz / 16 / 7.875, versus about -0.8% error on the STM32 at
+// 1843200. Stock Flipper firmware still works at this rate (the HAL accepts
+// 9600-4000000) but keeps the per-byte RX path, so pair this build with the
+// FlipDev firmware. Set back to 921600 if errors return.
+#define UART_BAUD_RATE (2000000UL)
 
 #define EXPANSION_MODULE_TIMEOUT_MS (EXPANSION_PROTOCOL_TIMEOUT_MS - 50UL)
 #define EXPANSION_MODULE_STARTUP_DELAY_MS (250UL)
@@ -138,6 +161,131 @@ static bool expansion_send_data_request(const uint8_t* data, size_t data_size) {
     return expansion_send_frame(&frame);
 }
 
+// Coprocessor channel (compute offload) - sibling to the RPC channel below,
+// interleaved on the same link. See ExpansionFrameTypeCoproc in
+// expansion_protocol.h. Keep expansion_handle_coproc_frame() in sync with
+// expansion_worker_handle_coproc_frame() on the Flipper side.
+
+static inline bool expansion_receive_frame_rpc_mode(ExpansionFrame* frame);
+
+typedef struct {
+    uint16_t job_id;
+    uint16_t chunk_next;
+    size_t len;
+} CoprocRxState;
+
+static CoprocRxState coproc_rx_state;
+
+// Reassembles inbound job-request chunks into coproc's RX buffer and hands
+// complete messages to compute_task. Always ACKs the frame; out-of-sequence
+// or oversized messages are dropped and NAK'd rather than desyncing the link.
+static void expansion_handle_coproc_frame(const ExpansionFrame* frame) {
+    const ExpansionFrameCoproc* coproc = &frame->content.coproc;
+    ExpansionFrameError ack_error = ExpansionFrameErrorNone;
+
+    do {
+        if(!(coproc->flags & ExpansionFrameCoprocFlagRequest)) break; // we don't submit jobs
+
+        if(coproc->flags & ExpansionFrameCoprocFlagFirst) {
+            coproc_rx_state.job_id = coproc->job_id;
+            coproc_rx_state.chunk_next = 0;
+            coproc_rx_state.len = 0;
+        }
+
+        if(coproc->job_id != coproc_rx_state.job_id ||
+           coproc->chunk_seq != coproc_rx_state.chunk_next ||
+           coproc->payload_len > COPROC_MAX_MESSAGE_SIZE - coproc_rx_state.len) {
+            coproc_rx_state.chunk_next = 0;
+            coproc_rx_state.len = 0;
+            ack_error = ExpansionFrameErrorUnknown;
+            break;
+        }
+
+        memcpy(
+            coproc_get_rx_buffer() + coproc_rx_state.len, coproc->payload, coproc->payload_len);
+        coproc_rx_state.len += coproc->payload_len;
+        coproc_rx_state.chunk_next++;
+
+        if(coproc->flags & ExpansionFrameCoprocFlagLast) {
+            coproc_submit_job(coproc_rx_state.job_id, coproc->task_type, coproc_rx_state.len);
+            coproc_rx_state.chunk_next = 0;
+            coproc_rx_state.len = 0;
+        }
+    } while(false);
+
+    expansion_send_status(ack_error);
+}
+
+// Sends a finished job result as chunked Coproc frames, waiting for a Status
+// ack per chunk - same flow-control discipline as expansion_send_data_request().
+static bool expansion_send_coproc_result(
+    uint16_t job_id,
+    uint8_t task_type,
+    bool is_error,
+    const uint8_t* data,
+    size_t data_size) {
+    const uint16_t chunk_total = data_size == 0 ?
+                                      1 :
+                                      (data_size + EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE - 1) /
+                                          EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE;
+
+    for(uint16_t chunk_seq = 0; chunk_seq < chunk_total; chunk_seq++) {
+        const size_t offset = (size_t)chunk_seq * EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE;
+        const size_t chunk_len =
+            MIN(data_size - offset, (size_t)EXPANSION_PROTOCOL_COPROC_MAX_PAYLOAD_SIZE);
+
+        uint8_t flags = 0; // Request flag clear: this is a result, not a job submission
+        if(chunk_seq == 0) flags |= ExpansionFrameCoprocFlagFirst;
+        if(chunk_seq == chunk_total - 1) flags |= ExpansionFrameCoprocFlagLast;
+        if(is_error) flags |= ExpansionFrameCoprocFlagError;
+
+        ExpansionFrame frame = {
+            .header.type = ExpansionFrameTypeCoproc,
+            .content.coproc =
+                {
+                    .job_id = job_id,
+                    .task_type = task_type,
+                    .flags = flags,
+                    .chunk_seq = chunk_seq,
+                    .chunk_total = chunk_total,
+                    .payload_len = chunk_len,
+                },
+        };
+        memcpy(frame.content.coproc.payload, data + offset, chunk_len);
+
+        if(!expansion_send_frame(&frame)) return false;
+
+        ExpansionFrame ack_frame;
+        if(!expansion_receive_frame_rpc_mode(&ack_frame)) return false;
+        if(ack_frame.header.type != ExpansionFrameTypeStatus ||
+           ack_frame.content.status.error != ExpansionFrameErrorNone) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Checks for a completed compute job and sends its result, if any. Called at
+// the top of every expansion_receive_frame_rpc_mode() iteration (not just on
+// an idle/timeout gap) - during continuous screen-mirroring there may be no
+// idle gap for a long time, and a result left undelivered means the next
+// finished job blocks compute_task forever trying to enqueue into a
+// still-full 1-slot result queue. No dedicated polling loop or
+// thread-priority games needed since this rides along on frames we're
+// already waiting for.
+static void expansion_coproc_service_pending_result(void) {
+    uint16_t job_id;
+    uint8_t task_type;
+    bool is_error;
+    size_t data_size;
+
+    if(coproc_poll_result(&job_id, &task_type, &is_error, &data_size)) {
+        expansion_send_coproc_result(
+            job_id, task_type, is_error, coproc_get_tx_buffer(), data_size);
+    }
+}
+
 // Rpc functions
 
 typedef struct {
@@ -149,7 +297,10 @@ static inline bool expansion_rpc_is_read_complete(const ExpansionRpcContext* ctx
     return ctx->frame.content.data.size == ctx->read_size;
 }
 
-// Receive a frame while maintaining idle connection
+// Receive a frame while maintaining idle connection. Also transparently
+// absorbs Coproc frames (job requests, handled inline) so callers waiting
+// for an RPC-layer frame (a Status ack or the next Data chunk) never see
+// them - see expansion_rpc_encode_callback() below for why this matters.
 static inline bool expansion_receive_frame_rpc_mode(ExpansionFrame* frame) {
     bool heartbeat_pending = false;
 
@@ -158,6 +309,16 @@ static inline bool expansion_receive_frame_rpc_mode(ExpansionFrame* frame) {
             expansion_protocol_decode(frame, expansion_receive_callback, NULL);
 
         if(status == ExpansionProtocolStatusErrorCommunication) {
+            // Deliberately NOT called on every loop iteration (was tried and
+            // reverted): during active screen streaming this loop runs once
+            // per chunk ack, many times a second - a non-blocking queue
+            // check there still added enough overhead to this hottest path
+            // in the firmware to delay UART servicing and cause receive
+            // overruns on the Flipper side. Only checking on a genuine idle
+            // gap costs some result-delivery latency during continuous
+            // streaming, but a working connection with delayed delivery beats
+            // a connection that can't stay up.
+            expansion_coproc_service_pending_result();
             if(!heartbeat_pending && expansion_send_heartbeat()) {
                 heartbeat_pending = true;
                 continue;
@@ -171,6 +332,8 @@ static inline bool expansion_receive_frame_rpc_mode(ExpansionFrame* frame) {
 
         if(expansion_is_heartbeat_frame(frame)) {
             heartbeat_pending = false;
+        } else if(frame->header.type == ExpansionFrameTypeCoproc) {
+            expansion_handle_coproc_frame(frame);
         } else {
             return true;
         }
@@ -229,6 +392,13 @@ static bool
         const size_t current_size = MIN(data_size - sent_size, EXPANSION_PROTOCOL_MAX_DATA_SIZE);
         if(!expansion_send_data_request(data + sent_size, current_size)) break;
 
+        // TEMP bisect revert: back to the original bare expansion_receive_frame()
+        // (hard-fails on anything but an exact Status[OK]) to test whether the
+        // tolerant expansion_receive_frame_rpc_mode() swap here is the cause of
+        // the UART overrun seen on the Flipper side during this exact transfer.
+        // Known tradeoff while reverted: an interleaved Coproc frame here would
+        // abort this RPC message - acceptable for this test since no Coproc
+        // frame is sent during first-frame setup.
         ExpansionFrame rx_frame;
         if(!expansion_receive_frame(&rx_frame)) break;
         if(!expansion_is_success_frame(&rx_frame)) break;
@@ -335,6 +505,10 @@ static bool expansion_start_virtual_display() {
     request->has_first_frame = true;
     request->first_frame.orientation = PB_Gui_ScreenOrientation_HORIZONTAL;
     request->first_frame.data = malloc(PB_BYTES_ARRAY_T_ALLOCSIZE(FLIPPER_BITMAP_SIZE));
+    // Was unchecked (stock code) - a NULL here under heap pressure would
+    // otherwise be an immediate crash on the very next line, at exactly the
+    // point where this firmware's first real allocation-heavy step runs.
+    if(!request->first_frame.data) return false;
     request->first_frame.data->size = FLIPPER_BITMAP_SIZE;
 
     memcpy(request->first_frame.data->bytes, bitmap_splash_screen, FLIPPER_BITMAP_SIZE);
