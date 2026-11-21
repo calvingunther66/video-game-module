@@ -35,7 +35,17 @@
 // only matters for screen mirroring (the coproc channel's 66-byte frames
 // are unaffected). May be liftable again on hardware/cabling with tighter
 // timing margin than this unit - not re-attempted here.
-#define UART_BAUD_RATE (921600UL)
+//
+// Raised again to 2000000 together with the FlipDev Momentum firmware's
+// expansion-worker change that moves the Flipper's USART1 RX from one
+// interrupt per byte to circular DMA with a deeper staging buffer (the
+// suspected cause of the overruns above). 2 Mbaud rather than 1843200 because
+// it divides exactly on both ends: STM32 64 MHz / 16 / 32 and RP2040
+// clk_peri 252 MHz / 16 / 7.875, versus about -0.8% error on the STM32 at
+// 1843200. Stock Flipper firmware still works at this rate (the HAL accepts
+// 9600-4000000) but keeps the per-byte RX path, so pair this build with the
+// FlipDev firmware. Set back to 921600 if errors return.
+#define UART_BAUD_RATE (2000000UL)
 
 #define EXPANSION_MODULE_TIMEOUT_MS (EXPANSION_PROTOCOL_TIMEOUT_MS - 50UL)
 #define EXPANSION_MODULE_STARTUP_DELAY_MS (250UL)
