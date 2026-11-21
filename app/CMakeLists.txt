@@ -18,6 +18,14 @@ target_compile_definitions(firmware PRIVATE
 	DVI_DEFAULT_SERIAL_CONFIG=${DVI_DEFAULT_SERIAL_CONFIG}
 )
 
+# Make sure our own tusb_config.h (this directory) is found ahead of the
+# Pico SDK's stock pico_stdio_usb/include/tusb_config.h - see the comment at
+# the top of app/tusb_config.h for why this needs to be "ours" now that USB
+# is a composite CDC+HID device instead of CDC-only.
+target_include_directories(firmware BEFORE PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 target_link_libraries(firmware
 	pico_stdlib
 	pico_multicore
@@ -27,6 +35,14 @@ target_link_libraries(firmware
 	libsprite
 	FreeRTOS
 	protobuf
+	# Marked (not "_unmarked") tinyusb_device: linking this defines
+	# LIB_TINYUSB_DEVICE=1 for this target, which is what hands descriptor
+	# ownership and the tud_init()/tud_task() lifecycle to us (usb_hid.c,
+	# usb_descriptors.c) instead of pico_stdio_usb's own CDC-only versions -
+	# see tusb_config.h. pico_stdio_usb (pulled in below via
+	# pico_enable_stdio_usb) still supplies the CDC glue the existing CLI
+	# runs on.
+	tinyusb_device
 )
 
 # Increase XOSC startup delay to improve boot reliability

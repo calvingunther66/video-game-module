@@ -1,4 +1,5 @@
 #include "coproc.h"
+#include "usb_hid.h"
 
 #include <string.h>
 #include <FreeRTOS.h>
@@ -84,6 +85,76 @@ static uint32_t coproc_crc32(const uint8_t* data, size_t size) {
     return ~crc;
 }
 
+// HID-inject command codec. Wire format is shared with the Flipper-side
+// Phase 1 BLE "agent_hid" protocol (see coproc.h's COPROC_TASK_HID_INJECT
+// comment) - keep in sync with that codec, not invented independently here.
+// Any command type outside the subset below (e.g. a future CMD_TYPE_TEXT or
+// CMD_CONSUMER_KEY) is skipped over via its own length prefix rather than
+// treated as an error, so a job built from that same generic command stream
+// still decodes cleanly on this side.
+typedef enum {
+    CoprocHidCmdKeyPress = 0x01, // payload: u16 LE keycode
+    CoprocHidCmdKeyRelease = 0x02, // payload: u16 LE keycode
+    CoprocHidCmdMouseMove = 0x04, // payload: i8 dx, i8 dy
+    CoprocHidCmdMouseClick = 0x05, // payload: u8 button, u8 down
+    CoprocHidCmdMouseScroll = 0x06, // payload: i8 delta
+    CoprocHidCmdReleaseAll = 0x08, // no payload
+} CoprocHidCmdType;
+
+static inline uint16_t coproc_read_u16_le(const uint8_t* p) {
+    return (uint16_t)(p[0] | (uint16_t)(p[1] << 8));
+}
+
+// Decodes and executes every command message packed into a
+// COPROC_TASK_HID_INJECT job payload: [u8 type][u16 len LE][payload bytes],
+// repeated back-to-back. Returns false if the payload itself is malformed
+// (a length prefix runs past the end of the job) or if any individual
+// command's execution (usb_hid.c) failed; a bad/mismatched-length payload
+// for a *known* command type is treated as that one command failing, not as
+// a framing error, so the rest of the job still gets a chance to run.
+static bool coproc_hid_inject(const uint8_t* data, size_t data_size) {
+    bool all_ok = true;
+    size_t offset = 0;
+
+    while(offset < data_size) {
+        if(data_size - offset < 3) return false; // truncated type+len header
+
+        const uint8_t type = data[offset];
+        const uint16_t len = coproc_read_u16_le(data + offset + 1);
+        offset += 3;
+
+        if(len > data_size - offset) return false; // length runs past the job
+        const uint8_t* payload = data + offset;
+        offset += len;
+
+        switch(type) {
+        case CoprocHidCmdKeyPress:
+            if(len != 2 || !usb_hid_key_press(coproc_read_u16_le(payload))) all_ok = false;
+            break;
+        case CoprocHidCmdKeyRelease:
+            if(len != 2 || !usb_hid_key_release(coproc_read_u16_le(payload))) all_ok = false;
+            break;
+        case CoprocHidCmdMouseMove:
+            if(len != 2 || !usb_hid_mouse_move((int8_t)payload[0], (int8_t)payload[1]))
+                all_ok = false;
+            break;
+        case CoprocHidCmdMouseClick:
+            if(len != 2 || !usb_hid_mouse_click(payload[0], payload[1] != 0)) all_ok = false;
+            break;
+        case CoprocHidCmdMouseScroll:
+            if(len != 1 || !usb_hid_mouse_scroll((int8_t)payload[0])) all_ok = false;
+            break;
+        case CoprocHidCmdReleaseAll:
+            if(len != 0 || !usb_hid_release_all()) all_ok = false;
+            break;
+        default:
+            break; // not ours - already skipped via the length prefix above
+        }
+    }
+
+    return all_ok;
+}
+
 static void compute_task(void* unused_arg) {
     (void)unused_arg;
 
@@ -113,6 +184,20 @@ static void compute_task(void* unused_arg) {
             // implementation automatically. See coproc.h in Momentum's
             // applications/services/coproc/ for the fallback contract.
             break;
+        case COPROC_TASK_HID_INJECT: {
+            // Fire-and-forget actuation, not a compute-in/result-out task:
+            // the output is a single status byte, not a computed result.
+            // is_error stays false here even when a command failed - that
+            // failure is reported via the status byte instead, since (unlike
+            // COMPRESS/DECOMPRESS_HEATSHRINK above) there is no local
+            // fallback for the Flipper side to fall back to on this task
+            // type, so an is_error result would just be a dead end there.
+            const bool ok = coproc_hid_inject(rx_buffer, job.data_size);
+            tx_buffer[0] = ok ? 0 : 1;
+            result.data_size = 1;
+            result.is_error = false;
+            break;
+        }
         default:
             break;
         }

@@ -14,6 +14,7 @@
 #include "led_state.h"
 #include "uart.h"
 #include "usb.h"
+#include "usb_hid.h"
 #include "bitmaps.h"
 #include "coproc.h"
 
@@ -25,6 +26,14 @@ static void init() {
 
     sleep_ms(10);
     set_sys_clock_khz(frame_get_clock(), true);
+
+    // Must run before stdio_init_all(): this brings up the shared TinyUSB
+    // device stack (tud_init()). USB is now a composite CDC+HID device (see
+    // tusb_config.h) rather than pico_stdio_usb's stock CDC-only setup, and
+    // pico_stdio_usb's own stdio_usb_init() (called from stdio_init_all()
+    // below) asserts tud_inited() instead of calling tusb_init() itself once
+    // it detects that - see stdio_usb.c.
+    usb_hid_init();
 
     stdio_init_all();
     frame_init();

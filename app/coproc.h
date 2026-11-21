@@ -11,6 +11,18 @@
 #define COPROC_TASK_CRC32                 0
 #define COPROC_TASK_COMPRESS_HEATSHRINK   1
 #define COPROC_TASK_DECOMPRESS_HEATSHRINK 2
+// Fire-and-forget physical HID actuation (keyboard/mouse), unlike the
+// compute-in/result-out tasks above. Job payload is one or more concatenated
+// command messages: [u8 type][u16 len LE][payload bytes], repeated until the
+// job payload is exhausted - same wire format as the Phase 1 BLE
+// "agent_hid" command codec on the Flipper side, so it must be decoded
+// identically here (see coproc.c). Output is a single status byte (0 =
+// every command in the job executed successfully, 1 = at least one did
+// not) - there is no computed result to return, and (unlike
+// COMPRESS/DECOMPRESS_HEATSHRINK above) no local fallback is possible on
+// the Flipper side either: see the CoprocTaskHidInject comment in
+// Momentum's applications/services/coproc/coproc.h.
+#define COPROC_TASK_HID_INJECT 3
 
 // Must match EXPANSION_WORKER_COPROC_MAX_MESSAGE_SIZE on the Flipper side.
 #define COPROC_MAX_MESSAGE_SIZE 4096
