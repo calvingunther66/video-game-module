@@ -79,6 +79,7 @@ typedef struct {
     /* Link and Flipper screen */
     bool link_up;
     bool have_frame;
+    uint8_t frame_orientation; /* PB_Gui_ScreenOrientation */
     uint8_t frame[1024];
 
     /* Top bar; battery_pct < 0 means unknown, clock[0] == 0 means unknown */

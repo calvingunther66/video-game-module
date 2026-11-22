@@ -62,11 +62,12 @@ static void submit_list(const char* path) {
 }
 
 void desktop_task_set_flipper_frame(uint8_t orientation, const uint8_t* data) {
-    (void)orientation; // TODO: rotate vertical frames
     if(!lock) return;
+    if(orientation > 3) orientation = 0;
     xSemaphoreTake(lock, portMAX_DELAY);
     const bool first = !state.have_frame;
     memcpy(state.frame, data, sizeof(state.frame));
+    state.frame_orientation = orientation;
     state.have_frame = true;
     xSemaphoreGive(lock);
     notify(first ? DIRTY_FULL : DIRTY_FLIPPER);
@@ -204,6 +205,88 @@ static void set_status_locked(const char* text) {
     snprintf(state.status, sizeof(state.status), "%s", text);
 }
 
+/*
+ * File associations, the same ones the Flipper's Archive app uses
+ * (archive_get_flipper_app_name). The app gets the file path as its args;
+ * a .fap is started by its own path. Firmware update manifests (.fuf) are
+ * left out on purpose: no updates one Enter away from the desktop.
+ * RPC input is tagged as software, so the Flipper doesn't remap keys for
+ * rotated screens and arrows stay in the logical directions we draw.
+ */
+typedef struct {
+    const char* ext;
+    const char* app;
+} dt_assoc_t;
+
+static const dt_assoc_t file_assoc[] = {
+    {".sub", "Sub-GHz"},
+    {".nfc", "NFC"},
+    {".rfid", "125 kHz RFID"},
+    {".ir", "Infrared"},
+    {".ibtn", "iButton"},
+    {".js", "/ext/apps/assets/js_app.fap"}, /* JS Runner is a FAP in Momentum */
+    {".wav", "/ext/apps/Media/wav_player.fap"},
+    {".mag", "/ext/apps/GPIO/magspoof.fap"},
+    {".xr", "/ext/apps/Infrared/xremote.fap"},
+    {".picopass", "/ext/apps/NFC/picopass.fap"},
+    {".psf", "/ext/apps/Sub-Ghz/proto_pirate.fap"},
+    {".img", "/ext/apps/USB/mass_storage.fap"},
+};
+
+/* Folder-dependent .txt files, as in archive_files.c; others open as text. */
+static const dt_assoc_t txt_assoc[] = {
+    {"/ext/badusb", "Bad KB"},
+    {"/ext/subghz/playlist", "/ext/apps/Sub-Ghz/subghz_playlist.fap"},
+    {"/ext/subghz/remote", "/ext/apps/Sub-Ghz/subghz_remote.fap"},
+    {"/ext/infrared/remote", "/ext/apps/Infrared/ir_remote.fap"},
+};
+
+/* path is prefix itself or below it. */
+static bool in_folder(const char* path, const char* prefix) {
+    size_t n = strlen(prefix);
+    return strncmp(path, prefix, n) == 0 && (path[n] == 0 || path[n] == '/');
+}
+
+static bool start_app_locked(const char* app, const char* args, const char* label);
+
+/* Called with the lock held. */
+static void open_file_locked(const char* name) {
+    char path[LINK_APP_ARGS_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s", state.cwd, name);
+    if(n <= 0 || n >= (int)sizeof(path)) {
+        set_status_locked("Path too long");
+        return;
+    }
+    const char* ext = strrchr(name, '.');
+    if(!ext) ext = "";
+
+    if(strcasecmp(ext, ".fap") == 0) {
+        if(n >= LINK_APP_NAME_MAX) {
+            set_status_locked("Path too long");
+            return;
+        }
+        start_app_locked(path, NULL, name);
+        return;
+    }
+    if(strcasecmp(ext, ".txt") == 0) {
+        for(size_t i = 0; i < sizeof(txt_assoc) / sizeof(txt_assoc[0]); i++) {
+            if(in_folder(state.cwd, txt_assoc[i].ext)) {
+                start_app_locked(txt_assoc[i].app, path, name);
+                return;
+            }
+        }
+        start_app_locked("/ext/apps/Tools/text_viewer.fap", path, name);
+        return;
+    }
+    for(size_t i = 0; i < sizeof(file_assoc) / sizeof(file_assoc[0]); i++) {
+        if(strcasecmp(ext, file_assoc[i].ext) == 0) {
+            start_app_locked(file_assoc[i].app, path, name);
+            return;
+        }
+    }
+    snprintf(state.status, sizeof(state.status), "No app for %.40s files", ext[0] ? ext : "these");
+}
+
 /* Called with the lock held. */
 static void parent_dir_locked(void) {
     if(is_root(state.cwd)) return;
@@ -226,21 +309,28 @@ static void activate_file_locked(void) {
         else
             set_status_locked("Path too long");
     } else {
-        set_status_locked("Opening files is not supported yet");
+        open_file_locked(f->name);
     }
+}
+
+/* Called with the lock held. */
+static bool start_app_locked(const char* app, const char* args, const char* label) {
+    LinkRequest r = {.type = LinkRequestAppStart};
+    snprintf(r.app.name, sizeof(r.app.name), "%.*s", (int)sizeof(r.app.name) - 1, app);
+    snprintf(r.app.args, sizeof(r.app.args), "%s", args ? args : "");
+    if(!uart_link_submit(&r)) {
+        set_status_locked("Flipper not linked");
+        return false;
+    }
+    snprintf(state.status, sizeof(state.status), "Starting %.50s", label);
+    state.focus = DT_FOCUS_FLIPPER;
+    return true;
 }
 
 /* Called with the lock held. */
 static void launch_dock_locked(void) {
     const dt_dock_item_t* it = &desktop_dock_items[state.dock_sel];
-    LinkRequest r = {.type = LinkRequestAppStart};
-    snprintf(r.path, sizeof(r.path), "%s", it->app);
-    if(uart_link_submit(&r)) {
-        snprintf(state.status, sizeof(state.status), "Starting %s", it->label);
-        state.focus = DT_FOCUS_FLIPPER;
-    } else {
-        set_status_locked("Flipper not linked");
-    }
+    start_app_locked(it->app, NULL, it->label);
 }
 
 /* Called with the lock held. */

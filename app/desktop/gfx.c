@@ -107,6 +107,53 @@ void gfx_flipper_frame(int x, int y, const uint8_t* frame, int scale, uint8_t on
     }
 }
 
+static inline bool frame_px(const uint8_t* frame, int px, int py) {
+    return frame[(py >> 3) * 128 + px] & (1u << (py & 7));
+}
+
+void gfx_flipper_frame_oriented(
+    int x,
+    int y,
+    const uint8_t* frame,
+    uint8_t orientation,
+    int scale,
+    uint8_t on,
+    uint8_t off) {
+    if(orientation == 0) {
+        gfx_flipper_frame(x, y, frame, scale, on, off);
+        return;
+    }
+    const bool vertical = orientation >= 2;
+    const int lw = vertical ? 64 : 128;
+    const int lh = vertical ? 128 : 64;
+    for(int ly = 0; ly < lh; ly++) {
+        for(int sy = 0; sy < scale; sy++) {
+            int py = y + ly * scale + sy;
+            if(py < clip_y0 || py >= clip_y1) continue;
+            uint8_t* dst = &gfx_fb[py * GFX_W];
+            for(int lx = 0; lx < lw; lx++) {
+                /* Inverse of the u8g2 rotations canvas_set_orientation uses:
+                 * 1 = R2 (180), 2 = R3 (270 cw), 3 = R1 (90 cw). */
+                int fx, fy;
+                if(orientation == 1) {
+                    fx = 127 - lx;
+                    fy = 63 - ly;
+                } else if(orientation == 2) {
+                    fx = ly;
+                    fy = 63 - lx;
+                } else {
+                    fx = 127 - ly;
+                    fy = lx;
+                }
+                uint8_t c = frame_px(frame, fx, fy) ? on : off;
+                int px = x + lx * scale;
+                for(int sx = 0; sx < scale; sx++, px++)
+                    if(px >= clip_x0 && px < clip_x1) dst[px] = c;
+            }
+        }
+    }
+}
+
 /* ---- u8g2 font decoding (see lib/u8g2/u8g2_font.c for the format) ---- */
 
 #define U8G2_HDR_SIZE 23

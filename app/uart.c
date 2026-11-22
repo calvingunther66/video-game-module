@@ -801,8 +801,8 @@ static bool expansion_send_request(const LinkRequest* request) {
         break;
     case LinkRequestAppStart:
         tx_message.which_content = PB_Main_app_start_request_tag;
-        tx_message.content.app_start_request.name = strdup(request->path);
-        tx_message.content.app_start_request.args = strdup("");
+        tx_message.content.app_start_request.name = strdup(request->app.name);
+        tx_message.content.app_start_request.args = strdup(request->app.args);
         if(!tx_message.content.app_start_request.name ||
            !tx_message.content.app_start_request.args) {
             free(tx_message.content.app_start_request.name);

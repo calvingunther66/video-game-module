@@ -57,6 +57,21 @@ void gfx_icon(int x, int y, const gfx_icon_t* icon, uint8_t c);
 void gfx_flipper_frame(int x, int y, const uint8_t* frame, int scale, uint8_t on, uint8_t off);
 
 /*
+ * Same, but undoes the Flipper canvas rotation first. The frame is always
+ * the raw 128x64 panel buffer; orientation is PB_Gui_ScreenOrientation
+ * (0 horizontal, 1 horizontal flip, 2 vertical, 3 vertical flip). Vertical
+ * frames come out 64 wide by 128 tall.
+ */
+void gfx_flipper_frame_oriented(
+    int x,
+    int y,
+    const uint8_t* frame,
+    uint8_t orientation,
+    int scale,
+    uint8_t on,
+    uint8_t off);
+
+/*
  * Text in a raw u8g2 font. y is the baseline. Returns the advance width.
  * Only the 0..255 encoding range is supported.
  */

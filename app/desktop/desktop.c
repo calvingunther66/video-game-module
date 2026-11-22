@@ -120,15 +120,32 @@ static void topbar(const desktop_state_t* s) {
 }
 
 void desktop_render_flipper(const desktop_state_t* s) {
+    const int lcd_w = 128 * FLIP_SCALE, lcd_h = 64 * FLIP_SCALE;
     if(s->link_up && s->have_frame) {
-        gfx_flipper_frame(LCD_X, LCD_Y, s->frame, FLIP_SCALE, DT_C_LCD_FG, DT_C_LCD_BG);
+        if(s->frame_orientation >= 2) {
+            /* Portrait (64x128) only fits the 256x128 LCD at 1x; centre it
+             * and blank the sides, which may hold an older landscape frame. */
+            const int ox = LCD_X + (lcd_w - 64) / 2;
+            gfx_fill_rect(LCD_X, LCD_Y, ox - LCD_X, lcd_h, DT_C_LCD_OFF);
+            gfx_fill_rect(ox + 64, LCD_Y, LCD_X + lcd_w - (ox + 64), lcd_h, DT_C_LCD_OFF);
+            gfx_flipper_frame_oriented(
+                ox, LCD_Y, s->frame, s->frame_orientation, 1, DT_C_LCD_FG, DT_C_LCD_BG);
+        } else {
+            gfx_flipper_frame_oriented(
+                LCD_X,
+                LCD_Y,
+                s->frame,
+                s->frame_orientation,
+                FLIP_SCALE,
+                DT_C_LCD_FG,
+                DT_C_LCD_BG);
+        }
         return;
     }
-    gfx_fill_rect(LCD_X, LCD_Y, 128 * FLIP_SCALE, 64 * FLIP_SCALE, DT_C_LCD_OFF);
+    gfx_fill_rect(LCD_X, LCD_Y, lcd_w, lcd_h, DT_C_LCD_OFF);
     const char* msg = s->link_up ? "Waiting for screen..." : "Waiting for Flipper...";
     int w = gfx_text_width(font_primary, msg);
-    gfx_text(LCD_X + (128 * FLIP_SCALE - w) / 2, LCD_Y + 64 * FLIP_SCALE / 2 + 3, font_primary,
-             msg, DT_C_ACCENT);
+    gfx_text(LCD_X + (lcd_w - w) / 2, LCD_Y + lcd_h / 2 + 3, font_primary, msg, DT_C_ACCENT);
 }
 
 static void flipper_window(const desktop_state_t* s) {

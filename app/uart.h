@@ -15,10 +15,12 @@ typedef enum {
     LinkRequestDateTime,
     LinkRequestPowerInfo,
     LinkRequestStorageList,
-    LinkRequestAppStart, /* path = loader app name */
+    LinkRequestAppStart, /* app.name = loader app name or .fap path, app.args */
 } LinkRequestType;
 
 #define LINK_PATH_MAX 96
+#define LINK_APP_NAME_MAX 64
+#define LINK_APP_ARGS_MAX 168
 
 typedef struct {
     LinkRequestType type;
@@ -28,6 +30,10 @@ typedef struct {
             uint8_t type;
         } input;
         char path[LINK_PATH_MAX];
+        struct {
+            char name[LINK_APP_NAME_MAX];
+            char args[LINK_APP_ARGS_MAX];
+        } app;
     };
 } LinkRequest;
 
