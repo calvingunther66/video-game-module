@@ -1,0 +1,2 @@
+Vendored from https://github.com/flipperdevices/heatshrink (the Momentum lib/heatshrink submodule, commit 7398ccc), ISC license, see LICENSE.
+Used by ../coproc_heatshrink.c with the same parameters as Momentum lib/toolbox/compress.c.

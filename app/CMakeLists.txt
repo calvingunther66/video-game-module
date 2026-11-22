@@ -8,6 +8,7 @@ file(GLOB APP_SOURCES
     "*.c*"
 	"cli/*.c*"
 	"imu/*.c*"
+	"heatshrink/*.c"
 )
 
 add_executable(firmware

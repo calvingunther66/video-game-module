@@ -1,5 +1,6 @@
 #include "coproc.h"
 #include "usb_hid.h"
+#include "coproc_heatshrink.h"
 
 #include <string.h>
 #include <FreeRTOS.h>
@@ -182,12 +183,23 @@ static void compute_task(void* unused_arg) {
             break;
         }
         case COPROC_TASK_COMPRESS_HEATSHRINK:
-        case COPROC_TASK_DECOMPRESS_HEATSHRINK:
-            // Not ported to this firmware yet - reported as an error, which
-            // makes the Flipper side fall back to its own local
-            // implementation automatically. See coproc.h in Momentum's
-            // applications/services/coproc/ for the fallback contract.
+        case COPROC_TASK_DECOMPRESS_HEATSHRINK: {
+            // Byte-compatible with Momentum's compress_encode/decode (see
+            // coproc_heatshrink.h). Any failure, including a result larger
+            // than the TX buffer, is reported as an error so the Flipper
+            // falls back to its own implementation.
+            size_t out_size = 0;
+            const bool ok = job.task_type == COPROC_TASK_COMPRESS_HEATSHRINK ?
+                                coproc_heatshrink_encode(
+                                    rx_buffer, job.data_size, tx_buffer, COPROC_MAX_MESSAGE_SIZE, &out_size) :
+                                coproc_heatshrink_decode(
+                                    rx_buffer, job.data_size, tx_buffer, COPROC_MAX_MESSAGE_SIZE, &out_size);
+            if(ok) {
+                result.data_size = out_size;
+                result.is_error = false;
+            }
             break;
+        }
         case COPROC_TASK_HID_INJECT: {
             // Fire-and-forget actuation, not a compute-in/result-out task:
             // the output is a single status byte, not a computed result.
@@ -221,10 +233,12 @@ void coproc_init(void) {
     // same heap (heap_3, a thin malloc/free wrapper) that
     // expansion_start_virtual_display()'s unchecked first_frame allocation
     // draws from, and was the likely cause of that allocation failing right
-    // when the first real display frame was built.
+    // when the first real display frame was built. 512 words now that the
+    // heatshrink jobs run here too; their state (~1.5 KB encoder, ~0.5 KB
+    // decoder) is malloc'd per job and freed straight after.
     TaskHandle_t handle = NULL;
     BaseType_t status =
-        xTaskCreate(compute_task, "compute_task", 256, NULL, tskIDLE_PRIORITY + 1, &handle);
+        xTaskCreate(compute_task, "compute_task", 512, NULL, tskIDLE_PRIORITY + 1, &handle);
     configASSERT(status == pdPASS);
     (void)status;
 }
