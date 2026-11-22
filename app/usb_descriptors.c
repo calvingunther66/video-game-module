@@ -84,18 +84,22 @@ const uint8_t* tud_hid_descriptor_report_cb(uint8_t instance) {
 enum {
     ITF_NUM_CDC = 0, // Also claims ITF_NUM_CDC + 1 (CDC data interface)
     ITF_NUM_HID = 2,
-    ITF_NUM_TOTAL,
+    ITF_NUM_CDC_DISPLAY = 3, // Also claims 4
+    ITF_NUM_TOTAL = 5,
 };
 
 #define EPNUM_CDC_NOTIF 0x81
 #define EPNUM_CDC_OUT   0x02
 #define EPNUM_CDC_IN    0x82
 #define EPNUM_HID       0x83
+#define EPNUM_DISP_NOTIF 0x84
+#define EPNUM_DISP_OUT   0x05
+#define EPNUM_DISP_IN    0x85
 
 #define USBD_CDC_CMD_MAX_SIZE   (8)
 #define USBD_CDC_IN_OUT_MAX_SIZE (64)
 
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_CDC_DESC_LEN + TUD_HID_DESC_LEN)
 
 static const uint8_t usbd_desc_cfg[CONFIG_TOTAL_LEN] = {
     // Config number, interface count, string index, total length, attribute, power in mA
@@ -120,6 +124,16 @@ static const uint8_t usbd_desc_cfg[CONFIG_TOTAL_LEN] = {
         EPNUM_HID,
         CFG_TUD_HID_EP_BUFSIZE,
         5),
+
+    // Second CDC: desktop display stream (silent in non-desktop builds).
+    TUD_CDC_DESCRIPTOR(
+        ITF_NUM_CDC_DISPLAY,
+        6,
+        EPNUM_DISP_NOTIF,
+        USBD_CDC_CMD_MAX_SIZE,
+        EPNUM_DISP_OUT,
+        EPNUM_DISP_IN,
+        USBD_CDC_IN_OUT_MAX_SIZE),
 };
 
 const uint8_t* tud_descriptor_configuration_cb(uint8_t index) {
@@ -137,6 +151,7 @@ const uint8_t* tud_descriptor_configuration_cb(uint8_t index) {
 #define USBD_STR_SERIAL  3
 #define USBD_STR_CDC     4
 #define USBD_STR_HID     5
+#define USBD_STR_DISPLAY 6
 
 static char usbd_serial_str[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
 
@@ -146,6 +161,7 @@ static const char* const usbd_desc_str[] = {
     [USBD_STR_SERIAL] = usbd_serial_str,
     [USBD_STR_CDC] = "VGM CLI",
     [USBD_STR_HID] = "VGM HID",
+    [USBD_STR_DISPLAY] = "VGM Display",
 };
 
 const uint16_t* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {

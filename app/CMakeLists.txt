@@ -18,6 +18,20 @@ target_compile_definitions(firmware PRIVATE
 	DVI_DEFAULT_SERIAL_CONFIG=${DVI_DEFAULT_SERIAL_CONFIG}
 )
 
+# Desktop shell: -DVGM_DESKTOP=ON draws the Flipper Desktop (app/desktop/)
+# on HDMI instead of mirroring the Flipper screen full size.
+if(VGM_DESKTOP)
+	file(GLOB DESKTOP_SOURCES "desktop/*.c")
+	target_sources(firmware PRIVATE ${DESKTOP_SOURCES})
+	target_compile_definitions(firmware PRIVATE VGM_DESKTOP=1)
+endif()
+
+# Link soak test: -DVGM_LINK_PING_TEST=<ms> sends an RPC ping every <ms> while
+# the screen streams (see expansion_flush_outbound in uart.c).
+if(VGM_LINK_PING_TEST)
+	target_compile_definitions(firmware PRIVATE VGM_LINK_PING_TEST=${VGM_LINK_PING_TEST})
+endif()
+
 # Make sure our own tusb_config.h (this directory) is found ahead of the
 # Pico SDK's stock pico_stdio_usb/include/tusb_config.h - see the comment at
 # the top of app/tusb_config.h for why this needs to be "ours" now that USB
@@ -109,8 +123,12 @@ message(STATUS "FW tag: ${FW_GIT_TAG}")
 
 set_property(SOURCE "cli/cli_command_device_info.cpp" APPEND PROPERTY COMPILE_OPTIONS ${INFO_FLAGS})
 
-set(FW_NAME "vgm-fw")
-set(FW_PATH "${CMAKE_SOURCE_DIR}/build/app")
+if(VGM_DESKTOP)
+	set(FW_NAME "vgm-fw-desktop")
+else()
+	set(FW_NAME "vgm-fw")
+endif()
+set(FW_PATH "${CMAKE_CURRENT_BINARY_DIR}")
 set(FW_NEW_PATH "${FW_PATH}/${FW_NAME}-${FW_GIT_TAG}")
 set(FW_PATH_UF2 "${FW_NEW_PATH}.uf2")
 set(FW_PATH_ELF "${FW_NEW_PATH}.elf")

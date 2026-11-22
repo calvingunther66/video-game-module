@@ -7,6 +7,11 @@
 #include <string.h>
 #include "frame.h"
 
+#ifdef VGM_DESKTOP
+#include "desktop/gfx.h"
+#include "desktop/desktop_task.h"
+#endif
+
 #define FRAME_WIDTH 320
 #define FRAME_HEIGHT 240
 
@@ -96,7 +101,8 @@ static void __not_in_flash("fill_scanline_v") fill_scanline_v(uint16_t* buf, uin
     }
 }
 
-static void __not_in_flash("core1_scanline_callback") core1_scanline_callback() {
+static void __attribute__((unused)) __not_in_flash("core1_scanline_callback")
+    core1_scanline_callback() {
     static uint scanline = 0;
 
     if(scanline == 0) {
@@ -132,15 +138,59 @@ static void __not_in_flash("core1_scanline_callback") core1_scanline_callback() 
     scanline = (scanline + 1) % FRAME_HEIGHT;
 }
 
+#ifdef VGM_DESKTOP
+// Desktop shell: core 0 draws a 320x240 8bpp indexed framebuffer (gfx_fb);
+// here core 1 converts one line at a time to RGB565 through gfx_palette just
+// ahead of the TMDS encoder. Everything this touches lives in SRAM so the
+// scan-out never stalls on XIP flash.
+#define DESKTOP_LINE_BUFS 4
+static uint16_t desktop_linebuf[DESKTOP_LINE_BUFS][FRAME_WIDTH];
+
+static void __not_in_flash("desktop_fill_line") desktop_fill_line(uint16_t* dst, uint y) {
+    const uint8_t* src = &gfx_fb[y * GFX_W];
+    for(uint x = 0; x < FRAME_WIDTH; x += 4) {
+        dst[x + 0] = gfx_palette[src[x + 0]];
+        dst[x + 1] = gfx_palette[src[x + 1]];
+        dst[x + 2] = gfx_palette[src[x + 2]];
+        dst[x + 3] = gfx_palette[src[x + 3]];
+    }
+}
+
+static void __not_in_flash("core1_scanline_callback_desktop") core1_scanline_callback_desktop() {
+    // Lines 0 and 1 were queued by frame_init() before DVI started.
+    static uint scanline = 2;
+    uint16_t* bufptr;
+    while(queue_try_remove_u32(&dvi0.q_colour_free, &bufptr))
+        ;
+    bufptr = desktop_linebuf[scanline % DESKTOP_LINE_BUFS];
+    desktop_fill_line(bufptr, scanline);
+    queue_add_blocking_u32(&dvi0.q_colour_valid, &bufptr);
+    scanline = (scanline + 1) % FRAME_HEIGHT;
+}
+#endif
+
 void frame_init() {
     dvi0.timing = &DVI_TIMING;
     dvi0.ser_cfg = picodvi_dvi_cfg;
+#ifdef VGM_DESKTOP
+    _Static_assert(GFX_W == FRAME_WIDTH && GFX_H == FRAME_HEIGHT, "desktop size");
+    dvi0.scanline_callback = core1_scanline_callback_desktop;
+    dvi_init(&dvi0, next_striped_spin_lock_num(), next_striped_spin_lock_num());
+
+    uint16_t* line0 = desktop_linebuf[0];
+    uint16_t* line1 = desktop_linebuf[1];
+    desktop_fill_line(line0, 0);
+    desktop_fill_line(line1, 1);
+    queue_add_blocking_u32(&dvi0.q_colour_valid, &line0);
+    queue_add_blocking_u32(&dvi0.q_colour_valid, &line1);
+#else
     dvi0.scanline_callback = core1_scanline_callback;
     dvi_init(&dvi0, next_striped_spin_lock_num(), next_striped_spin_lock_num());
 
     // add two scanlines to the scanlines queue
     queue_add_blocking_u32(&dvi0.q_colour_valid, &framebuf[0]);
     queue_add_blocking_u32(&dvi0.q_colour_valid, &framebuf[FRAME_WIDTH]);
+#endif
 
     multicore_launch_core1(core1_main);
 }
@@ -154,6 +204,11 @@ uint32_t frame_get_voltage() {
 }
 
 void frame_parse_data(uint8_t orientation, const frame_t* frame, uint32_t timeout_ms) {
+#ifdef VGM_DESKTOP
+    (void)timeout_ms;
+    desktop_task_set_flipper_frame(orientation, frame->data);
+    return;
+#endif
     if(mutex_enter_timeout_ms(&data_mutex, timeout_ms)) {
         memcpy(&next.frame, frame, sizeof(frame_t));
         next.orientation = orientation;

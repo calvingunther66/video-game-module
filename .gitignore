@@ -45,3 +45,9 @@ build/
 
 CMakeCache.txt
 CMakeFiles/
+
+# Desktop shell variant build and host preview outputs
+build-*/
+tools/desktop_preview/preview
+tools/desktop_preview/preview.dSYM/
+tools/desktop_preview/out/

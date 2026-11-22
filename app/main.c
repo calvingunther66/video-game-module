@@ -17,6 +17,9 @@
 #include "usb_hid.h"
 #include "bitmaps.h"
 #include "coproc.h"
+#ifdef VGM_DESKTOP
+#include "desktop/desktop_task.h"
+#endif
 
 static void init() {
     led_init();
@@ -36,6 +39,10 @@ static void init() {
     usb_hid_init();
 
     stdio_init_all();
+#ifdef VGM_DESKTOP
+    // Before frame_init(): core 1 starts scanning out gfx_fb immediately.
+    desktop_task_init();
+#endif
     frame_init();
     usb_init();
     uart_protocol_init();
@@ -44,6 +51,7 @@ static void init() {
     led_red(false);
 }
 
+#ifndef VGM_DESKTOP
 static void show_defaul_screen() {
     uint8_t* frame_buffer = calloc(FLIPPER_BITMAP_SIZE, sizeof(uint8_t));
 
@@ -53,11 +61,14 @@ static void show_defaul_screen() {
 
     free(frame_buffer);
 }
+#endif
 
 int main() {
     init();
 
+#ifndef VGM_DESKTOP
     show_defaul_screen();
+#endif
 
     // init the led task
     led_state_init();

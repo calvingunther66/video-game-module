@@ -48,3 +48,6 @@ void coproc_submit_job(uint16_t job_id, uint8_t task_type, size_t data_size);
 // (see expansion_receive_frame_rpc_mode() in uart.c). On true, the result
 // payload is in the buffer returned by coproc_get_tx_buffer().
 bool coproc_poll_result(uint16_t* job_id, uint8_t* task_type, bool* is_error, size_t* data_size);
+
+// True when coproc_poll_result() would return a result; does not consume it.
+bool coproc_result_ready(void);

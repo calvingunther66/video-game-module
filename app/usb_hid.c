@@ -4,6 +4,9 @@
 // with the existing CDC-based CLI as one composite USB device.
 
 #include "usb_hid.h"
+#ifdef VGM_DESKTOP
+#include "desktop/usb_display.h"
+#endif
 #include "usb_descriptors.h"
 
 #include <string.h>
@@ -161,6 +164,10 @@ static void usb_hid_task(void* unused_arg) {
     (void)unused_arg;
     for(;;) {
         tud_task();
+#ifdef VGM_DESKTOP
+        // Same task as tud_task(): TinyUSB here has no OS locking.
+        usb_display_service();
+#endif
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }

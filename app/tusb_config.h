@@ -24,9 +24,11 @@
 // --- CDC (existing CLI-over-USB, see app/cli/) ---
 // Keep enabled and unchanged in shape so pico_stdio_usb's CDC glue in
 // stdio_usb.c (stdio_usb_in_chars/out_chars) keeps working exactly as before.
-#define CFG_TUD_CDC             (1)
+// Two CDC ports: 0 = CLI/stdio, 1 = "VGM Display" (desktop framebuffer
+// stream + keyboard/mouse input, see desktop/usb_display.c).
+#define CFG_TUD_CDC             (2)
 #define CFG_TUD_CDC_RX_BUFSIZE  (256)
-#define CFG_TUD_CDC_TX_BUFSIZE  (256)
+#define CFG_TUD_CDC_TX_BUFSIZE  (1024)
 
 // --- HID (new - keyboard + mouse injection, see usb_hid.c) ---
 #define CFG_TUD_HID             (1)

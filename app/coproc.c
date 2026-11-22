@@ -43,6 +43,10 @@ void coproc_submit_job(uint16_t job_id, uint8_t task_type, size_t data_size) {
     xQueueSend(job_queue, &msg, 0);
 }
 
+bool coproc_result_ready(void) {
+    return result_queue && uxQueueMessagesWaiting(result_queue) > 0;
+}
+
 bool coproc_poll_result(uint16_t* job_id, uint8_t* task_type, bool* is_error, size_t* data_size) {
     CoprocResultMsg msg;
     if(xQueueReceive(result_queue, &msg, 0) != pdTRUE) return false;
