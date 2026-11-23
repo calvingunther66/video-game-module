@@ -23,6 +23,10 @@
 // the Flipper side either: see the CoprocTaskHidInject comment in
 // Momentum's applications/services/coproc/coproc.h.
 #define COPROC_TASK_HID_INJECT 3
+// Remote GPIO expander: [op][pin][arg] records in, [status][u16 value LE]
+// per record out. Breakout pins only - see coproc_gpio.h. No local fallback
+// on the Flipper side (the pins only exist here).
+#define COPROC_TASK_GPIO 4
 
 // Must match EXPANSION_WORKER_COPROC_MAX_MESSAGE_SIZE on the Flipper side.
 #define COPROC_MAX_MESSAGE_SIZE 4096

@@ -1,6 +1,7 @@
 #include "coproc.h"
 #include "usb_hid.h"
 #include "coproc_heatshrink.h"
+#include "coproc_gpio.h"
 
 #include <string.h>
 #include <FreeRTOS.h>
@@ -212,6 +213,18 @@ static void compute_task(void* unused_arg) {
             tx_buffer[0] = ok ? 0 : 1;
             result.data_size = 1;
             result.is_error = false;
+            break;
+        }
+        case COPROC_TASK_GPIO: {
+            // Per-record refusals (pin off the whitelist, bad op...) come
+            // back in each record's status byte; is_error is only for a
+            // malformed job, so the Flipper can tell "refused" apart from
+            // "no module / no answer".
+            size_t out_size = 0;
+            if(coproc_gpio_run(rx_buffer, job.data_size, tx_buffer, COPROC_MAX_MESSAGE_SIZE, &out_size)) {
+                result.data_size = out_size;
+                result.is_error = false;
+            }
             break;
         }
         default:

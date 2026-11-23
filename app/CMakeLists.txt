@@ -46,6 +46,7 @@ target_link_libraries(firmware
 	pico_multicore
 	pico_util
 	hardware_spi
+	hardware_adc
 	libdvi
 	libsprite
 	FreeRTOS
