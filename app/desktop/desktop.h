@@ -85,6 +85,9 @@ typedef struct {
     /* Top bar; battery_pct < 0 means unknown, clock[0] == 0 means unknown */
     int battery_pct;
     bool charging;
+    /* Battery wear from the fuel gauge; < 0 means unknown */
+    int battery_health_pct;
+    int battery_cycles;
     bool sd_present;
     char clock[6];
 

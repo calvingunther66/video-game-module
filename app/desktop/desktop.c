@@ -48,6 +48,8 @@ void desktop_init_palette(void) {
 void desktop_state_init(desktop_state_t* s) {
     memset(s, 0, sizeof(*s));
     s->battery_pct = -1;
+    s->battery_health_pct = -1;
+    s->battery_cycles = -1;
     strcpy(s->cwd, "/ext");
 }
 
@@ -106,6 +108,21 @@ static void topbar(const desktop_state_t* s) {
         if(s->charging) {
             x -= icon_charging.w + 2;
             gfx_icon(x, 2, &icon_charging, DT_C_ACCENT);
+        }
+        /* Battery wear, dim: "98% hp 312 cyc". Health under 80% is worn. */
+        char wear[24] = "";
+        int n = 0;
+        if(s->battery_health_pct >= 0)
+            n += snprintf(wear + n, sizeof(wear) - n, "%d%% hp", s->battery_health_pct);
+        if(s->battery_cycles >= 0)
+            snprintf(wear + n, sizeof(wear) - n, "%s%d cyc", n ? " " : "", s->battery_cycles);
+        if(wear[0]) {
+            int ww = gfx_text_width(font_secondary, wear);
+            x -= ww + 6;
+            uint8_t wc = (s->battery_health_pct >= 0 && s->battery_health_pct < 80) ?
+                             DT_C_WARN :
+                             DT_C_TEXT_DIM;
+            gfx_text(x, 10, font_secondary, wear, wc);
         }
     }
 

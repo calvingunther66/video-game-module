@@ -120,6 +120,8 @@ static void on_link_event(const LinkEvent* event) {
         state.have_frame = false;
         state.battery_pct = -1;
         state.charging = false;
+        state.battery_health_pct = -1;
+        state.battery_cycles = -1;
         state.clock[0] = 0;
         state.sd_present = false;
         state.file_count = 0;
@@ -134,6 +136,11 @@ static void on_link_event(const LinkEvent* event) {
             state.battery_pct = atoi(event->power.value);
         } else if(strcmp(event->power.key, "charge_state") == 0) {
             state.charging = strcmp(event->power.value, "charging") == 0;
+        } else if(strcmp(event->power.key, "battery_health") == 0) {
+            state.battery_health_pct = atoi(event->power.value);
+        } else if(strcmp(event->power.key, "battery_cycles") == 0) {
+            /* Sent since Flipware power info format 2.2; absent on older firmware. */
+            state.battery_cycles = atoi(event->power.value);
         } else {
             bits = 0; // other keys don't change the screen
         }
